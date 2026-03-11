@@ -1,6 +1,10 @@
-const axios = require('axios');
+// Dispatcher — vælger automatisk provider baseret på AI_PROVIDER i .env
+// Mulige værdier: 'ollama' (lokal) eller 'api' (ekstern)
+
 const config = require('../core/config');
 const logger = require('../core/logger');
+const ollama = require('./ollama');
+const apiService = require('./apiService');
 
 const SYSTEM_PROMPT =
   'Du er Assistly, en hjælpsom AI-assistent. ' +
@@ -13,17 +17,22 @@ const AICHAT_SYSTEM_PROMPT =
   'Du husker hele samtalens kontekst og kan referere til tidligere beskeder i chatten. ' +
   'Svar på det sprog brugeren skriver på — skriv på dansk hvis de skriver dansk, engelsk hvis de skriver engelsk osv.';
 
+function dispatch(messages) {
+  if (config.aiProvider === 'api') {
+    return apiService.chat(messages);
+  }
+  return ollama.chat(messages);
+}
+
 async function ask(prompt) {
   try {
-    const response = await axios.post(`${config.ollamaUrl}/api/generate`, {
-      model: config.ollamaModel,
-      system: SYSTEM_PROMPT,
-      prompt,
-      stream: false,
-    });
-    return response.data.response;
+    const messages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: prompt },
+    ];
+    return await dispatch(messages);
   } catch (err) {
-    logger.error(`Ollama fejl: ${err.message}`);
+    logger.error(`AI fejl (${config.aiProvider}): ${err.message}`);
     throw new Error('Assistly kunne ikke behandle din forespørgsel. Prøv igen.');
   }
 }
@@ -34,14 +43,9 @@ async function chatWithHistory(history) {
       { role: 'system', content: AICHAT_SYSTEM_PROMPT },
       ...history,
     ];
-    const response = await axios.post(`${config.ollamaUrl}/api/chat`, {
-      model: config.ollamaModel,
-      messages,
-      stream: false,
-    });
-    return response.data.message.content;
+    return await dispatch(messages);
   } catch (err) {
-    logger.error(`Ollama chat fejl: ${err.message}`);
+    logger.error(`AI chat fejl (${config.aiProvider}): ${err.message}`);
     throw new Error('Assistly kunne ikke behandle din forespørgsel. Prøv igen.');
   }
 }
