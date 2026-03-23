@@ -24,6 +24,111 @@ function dispatch(messages) {
   return ollama.chat(messages);
 }
 
+function safeJsonParse(text) {
+  if (!text || typeof text !== 'string') return null;
+
+  // Try raw JSON first
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Continue
+  }
+
+  // Then try first {...} block
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+function fallbackModerationIntent(input) {
+  const text = String(input || '').trim();
+  const lower = text.toLowerCase();
+
+  const deleteLast = lower.match(/slet\s+de\s+sidste\s+(\d+)\s+beskeder?/i);
+  if (deleteLast) {
+    return {
+      isModeration: true,
+      action: 'deleteMessages',
+      searchLimit: Number(deleteLast[1]) + 25,
+      criteria: {
+        count: Number(deleteLast[1]),
+      },
+      reason: 'Slet sidste N beskeder',
+    };
+  }
+
+  const deleteWord = lower.match(/slet\s+alle\s+beskeder\s+med\s+ordet\s+(.+)$/i);
+  if (deleteWord) {
+    const term = deleteWord[1].replace(/["'`]+/g, '').trim();
+    if (!term) return null;
+    return {
+      isModeration: true,
+      action: 'deleteMessages',
+      scanAll: true,
+      criteria: {
+        contains: term,
+      },
+      reason: 'Slet beskeder med bestemt ord',
+    };
+  }
+
+  return null;
+}
+
+async function detectModerationIntent(input) {
+  const fallback = fallbackModerationIntent(input);
+  if (fallback) return fallback;
+
+  const prompt =
+    'Vurdér om brugerens besked er en moderation-kommando i Discord. ' +
+    'Hvis NEJ: returnér KUN JSON: {"isModeration":false}. ' +
+    'Hvis JA: returnér KUN JSON med formatet: ' +
+    '{"isModeration":true,"action":"deleteMessages","searchLimit":300,"criteria":{...},"reason":"kort"}. ' +
+    'Tillad disse criteria felter: count, contains, regex, authorId, hasAttachments, hasLinks, startsWith, endsWith, minLength, maxLength, beforeHours, afterHours, includeBots. ' +
+    'authorId skal være Discord user id hvis nævnt. ' +
+    'Intet markdown, ingen forklaring, kun JSON.\n\n' +
+    `Brugerbesked: ${input}`;
+
+  try {
+    const raw = await dispatch([
+      {
+        role: 'system',
+        content: 'Du er en streng JSON-udtrækker. Svar KUN med gyldig JSON.',
+      },
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ]);
+
+    const parsed = safeJsonParse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return { isModeration: false };
+    }
+
+    if (parsed.isModeration !== true) {
+      return { isModeration: false };
+    }
+
+    return {
+      isModeration: true,
+      action: parsed.action || 'deleteMessages',
+      searchLimit: Number(parsed.searchLimit) || undefined,
+      scanAll: parsed.scanAll === true,
+      criteria: parsed.criteria && typeof parsed.criteria === 'object' ? parsed.criteria : {},
+      reason: parsed.reason || 'Moderation udført',
+    };
+  } catch {
+    return { isModeration: false };
+  }
+}
+
 async function ask(prompt) {
   try {
     const messages = [
@@ -50,4 +155,4 @@ async function chatWithHistory(history) {
   }
 }
 
-module.exports = { ask, chatWithHistory };
+module.exports = { ask, chatWithHistory, detectModerationIntent };
